@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Tests</title>
+    <link rel="stylesheet" media="all" href="../node_modules/mocha/mocha.css">
+</head>
+<body>
+    <div id="mocha"><p><a href=".">Index</a></p></div>
+    <div id="messages"></div>
+    <div id="fixtures"></div>
+    <script src="../node_modules/mocha/mocha.js"></script>
+    <script src="../node_modules/chai/chai.js"></script>
+    <script src="../bulksearch.min.js"></script>
+    <script>
+        mocha.ui('bdd');
+        mocha.reporter('html');
+        var expect = chai.expect;
+    </script>
+    <script>
+
+        /** Polyfill PhantomJS */
+
+        if(typeof Uint32Array !== 'undefined') Uint32Array.prototype.fill = fill;
+        if(typeof Uint16Array !== 'undefined') Uint16Array.prototype.fill = fill;
+        if(typeof Float64Array !== 'undefined') Float64Array.prototype.fill = fill;
+        if(typeof Uint8Array !== 'undefined') Uint8Array.prototype.fill = fill;
+
+        function fill(value, from, to){
+
+            to || (to = this.length);
+
+            for(var i = (from || 0); i < to; i++){
+
+                this[i] = value;
+            }
+        }
+
+    </script>
+    <script src="../test/test.js"></script>
+    <script>
+        if(window.mochaPhantomJS) {
+
+            mochaPhantomJS.run();
+        }
+        else{
+
+            mocha.run();
+        }
+    </script>
+</body>
+</html>
