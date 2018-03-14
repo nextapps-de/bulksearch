@@ -1,5 +1,7 @@
 # BulkSearch
 
+[![Greenkeeper badge](https://badges.greenkeeper.io/nextapps-de/bulksearch.svg)](https://greenkeeper.io/)
+
 ### Superfast, lightweight and read-write optimized full text search library.
 
 When it comes to the overall speed, BulkSearch outperforms every searching library out there and also provides flexible search capabilities like multi-word, phonetics or partial matching. It is basically based on how a hdd manage their filesystem. Adding, updating or removing items are also fast as searching for them, but also requires some additional amount of memory. When your index don't needs to be updated continuously then <a href="https://github.com/nextapps-de/flexsearch" target="_blank">FlexSearch</a> may be a better choice. BulkSearch also provides you a asynchronous processing model to perform any updates on the index in background. 
