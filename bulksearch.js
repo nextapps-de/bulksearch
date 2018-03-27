@@ -1,15 +1,28 @@
-/**!
- * BulkSearch - Superfast lightweight full text search engine
- * ----------------------------------------------------------
- * @author: Thomas Wilkerling
- * @preserve https://github.com/nextapps-de/bulksearch
- * @version: 0.1.26
- * @license: Apache 2.0 Licence
+;/**!
+ * @preserve BulkSearch v0.1.3
+ * Copyright 2018 Thomas Wilkerling
+ * Released under the Apache 2.0 Licence
+ * https://github.com/nextapps-de/bulksearch
  */
 
-;(function(){
+/** @define {boolean} */
+var SUPPORT_WORKER = true;
 
-    provide('BulkSearch', (function factory(queue, cache){
+/** @define {boolean} */
+var SUPPORT_BUILTINS = true;
+
+/** @define {boolean} */
+var SUPPORT_DEBUG = true;
+
+/** @define {boolean} */
+var SUPPORT_CACHE = true;
+
+/** @define {boolean} */
+var SUPPORT_ASYNC = true;
+
+(function(){
+
+    provide('BulkSearch', (function factory(register_worker){
 
         "use strict";
 
@@ -25,8 +38,9 @@
             // bitsize of assigned IDs (data type)
             type: 'integer',
 
-            // type of information
-            result: 'id',
+            suggest: false,
+            async: false,
+            worker: false,
 
             // type-save separator
             separator: '~', // '^'
@@ -35,10 +49,10 @@
             strict: false,
 
             // handle multiple words as separated queries
-            multi: false,
+            multi: true,
 
             // boolean model of multiple words
-            boolean: false,
+            //boolean: false,
 
             // matching in strict order (multiple words)
             ordered: false,
@@ -48,16 +62,15 @@
 
             // use on of built-in functions
             // or pass custom encoding algorithm
-            encode: false,
+            encode: 'icase',
 
             // paging results
             paging: false,
 
-            // default chunk size
-            size: 4000, // 600 -> 2500 -> 4000 -> 5000 -> 10000
+            depth: 0,
 
-            // depth of register
-            depth: 0
+            // default chunk size
+            size: 4000 // 600 -> 2500 -> 4000 -> 5000 -> 10000
         };
 
         /**
@@ -75,52 +88,59 @@
         var id_counter = 0;
 
         /**
-         * @param {Object<string, number|string|boolean>=} options
+         * @enum {number}
+         */
+
+        var enum_task = {
+
+            add: 0,
+            update: 1,
+            remove: 2
+        };
+
+        /**  @const  {RegExp} */
+        var regex_split = regex("[ -\/]");
+
+        var filter = {};
+
+        var stemmer = {};
+
+        /**
+         * @param {Object<string, number|string|boolean|Object|function(string):string>=} options
          * @constructor
          * @private
-         * @const
          */
 
         function BulkSearch(options){
 
+            options || (options = defaults);
+
+            this.name = "BulkSearch";
+
             // generate UID
 
             /** @export */
-            this.id = id_counter++;
+            this.id = options['id'] || id_counter++;
 
             // initialize index
 
-            this.init(options || defaults);
+            this.init(options);
 
             // define functional properties
 
-            Object.defineProperty(this, 'index', {
+            registerProperty(this, 'index', /** @this {BulkSearch} */ function(){
 
-                /**
-                 * @this {BulkSearch}
-                 */
-
-                get: function(){
-
-                    return this._marker;
-                }
+                return this._marker;
             });
 
-            Object.defineProperty(this, 'length', {
+            registerProperty(this, 'length', /** @this {BulkSearch} */ function(){
 
-                /**
-                 * @this {BulkSearch}
-                 */
-
-                get: function(){
-
-                    return Object.keys(this._marker).length;
-                }
+                return Object.keys(this._marker).length;
             });
         }
 
         /**
-         * @param {Object<string, number|string|boolean>=} options
+         * @param {Object<string, number|string|boolean|Object|function(string):string>=} options
          * @export
          */
 
@@ -130,7 +150,7 @@
         };
 
         /**
-         * @param {Object<string, number|string|boolean>=} options
+         * @param {Object<string, number|string|boolean|Object|function(string):string>=} options
          * @export
          */
 
@@ -154,6 +174,8 @@
                     global_matcher[global_matcher.length] = matcher[key];
                 }
             }
+
+            return this;
         };
 
         /**
@@ -162,9 +184,34 @@
          * @export
          */
 
-        BulkSearch.register = function(name, encoder){
+        BulkSearch.registerEncoder = function(name, encoder){
 
             global_encoder[name] = encoder;
+
+            return this;
+        };
+
+        /**
+         * @param {string} lang
+         * @param {Object} language_pack
+         * @export
+         */
+
+        BulkSearch.registerLanguage = function(lang, language_pack){
+
+            /**
+             * @type {Array<string>}
+             */
+
+            filter[lang] = language_pack['filter'];
+
+            /**
+             * @type {Object<string, string>}
+             */
+
+            stemmer[lang] = language_pack['stemmer'];
+
+            return this;
         };
 
         /**
@@ -176,7 +223,7 @@
 
         BulkSearch.encode = function(name, value){
 
-            return global_encoder[name](value);
+            return global_encoder[name].call(global_encoder, value);
         };
 
         /**
@@ -187,9 +234,88 @@
 
         BulkSearch.prototype.init = function(options){
 
+            /** @type {Array} */
+            this._matcher = [];
+
             // apply options
 
-            if(options){
+            //if(options){
+
+                options || (options = defaults);
+
+                var custom;
+
+            // initialize worker
+
+            if(SUPPORT_WORKER && (custom = options['worker'])){
+
+                if(typeof Worker === 'undefined'){
+
+                    options['worker'] = false;
+
+                    if(SUPPORT_ASYNC){
+
+                        options['async'] = true;
+                    }
+
+                    this._worker = null;
+                }
+                else{
+
+                    var self = this;
+                    var threads = parseInt(custom, 10) || 4;
+
+                    self._current_task = -1;
+                    self._task_completed = 0;
+                    self._task_result = [];
+                    self._current_callback = null;
+                    self._worker = new Array(threads);
+
+                    for(var i = 0; i < threads; i++){
+
+                        self._worker[i] = add_worker(self.id, i, options || defaults, function(id, query, result, limit){
+
+                            if(self._task_completed === self.worker){
+
+                                return;
+                            }
+
+                            self._task_result = self._task_result.concat(result);
+                            self._task_completed++;
+
+                            if(limit && (self._task_result.length >= limit)){
+
+                                self._task_completed = self.worker;
+                            }
+
+                            if(self._current_callback && (self._task_completed === self.worker)){
+
+                                if(typeof self._last_empty_query !== 'undefined'){
+
+                                    if(self._task_result.length){
+
+                                        self._last_empty_query = "";
+                                    }
+                                    else{
+
+                                        self._last_empty_query || (self._last_empty_query = query);
+                                    }
+                                }
+
+                                // store result to cache
+
+                                if(self.cache){
+
+                                    self._cache.set(query, self._task_result);
+                                }
+
+                                self._current_callback(self._task_result);
+                                self._task_result = [];
+                            }
+                        });
+                    }
+                }
+            }
 
                 this.type = (
 
@@ -198,11 +324,18 @@
                     defaults.type
                 );
 
-                this.result = (
+                if(SUPPORT_ASYNC) this.async = (
 
-                    options['result'] ||
-                    this.result ||
-                    defaults.result
+                    options['async'] ||
+                    this.async ||
+                    defaults.async
+                );
+
+                if(SUPPORT_WORKER) this.worker = (
+
+                    options['worker'] ||
+                    this.worker ||
+                    defaults.worker
                 );
 
                 this.separator = (
@@ -233,25 +366,18 @@
                     defaults.multi
                 );
 
-                this.boolean = (
-
-                    options['boolean'] === 'or' ||
-                    this.boolean ||
-                    defaults.boolean
-                );
+                // this.boolean = (
+                //
+                //     options['boolean'] === 'or' ||
+                //     this.boolean ||
+                //     defaults.boolean
+                // );
 
                 this.paging = (
 
                     options['paging'] ||
                     this.paging ||
                     defaults.paging
-                );
-
-                this.cache = (
-
-                    options['cache'] ||
-                    this.cache ||
-                    defaults.cache
                 );
 
                 this.depth = (
@@ -261,14 +387,48 @@
                     defaults.depth
                 );
 
-                /** @export */
+                this.suggest = (
+
+                    options['suggest'] ||
+                    this.suggest ||
+                    defaults.suggest
+                );
+
+                custom = options['encode'];
+
                 this.encoder = (
 
-                    (options['encode'] && global_encoder[options['encode']]) ||
-                    this.encoder ||
-                    global_encoder[defaults.encode] ||
-                    options['encode']
+                    (custom && global_encoder[custom]) ||
+                    (typeof custom === 'function' ? custom : this.encoder || false)
                 );
+
+                if(SUPPORT_DEBUG){
+
+                    this.debug = (
+
+                        options['debug'] ||
+                        this.debug
+                    );
+                }
+
+                if(custom = options['matcher']) {
+
+                    this.addMatcher(
+
+                        /** @type {Object<string, string>} */
+                        (custom)
+                    );
+                }
+
+                if((custom = options['filter'])) {
+
+                    this.filter = initFilter(filter[custom] || custom, this.encoder);
+                }
+
+                if((custom = options['stemmer'])) {
+
+                    this.stemmer = initStemmer(stemmer[custom] || custom, this.encoder);
+                }
 
                 /** @type {Object<string, number>} */
                 this._scores = {};
@@ -276,18 +436,27 @@
                 /** @type {number} */
                 this._chunk_size = /** @type {number} */ (options['size'] || defaults.size);
 
-                if(options['matcher']) {
+                if(SUPPORT_CACHE) {
 
-                    /** @type {Array} */
-                    this._matcher = [];
-                    this.addMatcher(/** @type {Object<string, string>} */ (options['matcher']));
+                    this.cache = custom = (
+
+                        options['cache'] ||
+                        this.cache ||
+                        defaults.cache
+                    );
+
+                    this._cache = custom ?
+
+                        (new cache(custom))
+                    :
+                        false;
                 }
-            }
+            //}
 
             // initialize index
 
+            this._last_empty_query = "";
             this._pages = {};
-            this._matcher || (this._matcher = []);
             this._index = [create_typed_array(this.type, this._chunk_size)];
             this._marker = {};
             this._fragment = {};
@@ -296,11 +465,15 @@
             this._chunk = 0;
             this._status = true;
             this._fragmented = 0;
+            this._stack = {};
+            this._stack_keys = [];
             this._cache = this.cache ?
 
                 (new cache(30 * 1000, 50, true))
             :
                 false;
+
+            return this;
         };
 
         /**
@@ -312,22 +485,70 @@
 
         BulkSearch.prototype.encode = function(value){
 
-            if(this.encoder){
-
-                value = this.encoder(value);
-            }
-
-            if(global_matcher.length){
+            if(value && global_matcher.length){
 
                 value = replace(value, global_matcher);
             }
 
-            if(this._matcher.length){
+            if(value && this._matcher.length){
 
                 value = replace(value, this._matcher);
             }
 
+            if(value && this.encoder){
+
+                value = this.encoder.call(global_encoder, value);
+            }
+
+            if(value && this.filter){
+
+                var words = value.split(' ');
+                //var final = "";
+
+                for(var i = 0; i < words.length; i++){
+
+                    var word = words[i];
+                    var filter = this.filter[word];
+
+                    if(filter){
+
+                        //var length = word.length - 1;
+
+                        //words[i] = filter;
+                        words.splice(i, 1);
+                    }
+                }
+
+                value = words.join(' '); // final;
+            }
+
+            if(value && this.stemmer){
+
+                value = replace(value, this.stemmer);
+            }
+
             return value;
+        };
+
+        /**
+         * @param {Object<string, string>} custom
+         * @export
+         */
+
+        BulkSearch.prototype.addMatcher = function(custom){
+
+            var matcher = this._matcher;
+
+            for(var key in custom){
+
+                if(custom.hasOwnProperty(key)){
+
+                    matcher[matcher.length] = regex(key);
+                    matcher[matcher.length] = custom[key];
+                }
+            }
+
+            return this;
         };
 
         /**
@@ -350,7 +571,42 @@
                 }
                 else{
 
-                    if(typeof encoded_content === 'string'){
+                    if(SUPPORT_WORKER && this.worker){
+
+                        if(++this._current_task >= this._worker.length) this._current_task = 0;
+
+                        this._worker[this._current_task].postMessage(this._current_task, {
+
+                            'add': true,
+                            'id': id,
+                            'content': content
+                        });
+
+                        this._marker[id] = "" + this._current_task;
+
+                        return this;
+                    }
+
+                    if(SUPPORT_ASYNC && this.async){
+
+                        this._stack[id] || (
+
+                            this._stack_keys[this._stack_keys.length] = id
+                        );
+
+                        this._stack[id] = [
+
+                            enum_task.add,
+                            id,
+                            content
+                        ];
+
+                        register_task(this);
+
+                        return this;
+                    }
+
+                    if(encoded_content){
 
                         content = encoded_content;
                     }
@@ -358,13 +614,22 @@
 
                         if(content){
 
-                            content = encodeContent.call(this, content);
+                            content = encodeContent.call(this, content.trim());
+
+                            if(!content){
+
+                                return this;
+                            }
+
+                            content = '~' + (
+
+                                this.strict ?
+
+                                    content.replace(/ /g, '~')
+                                :
+                                    content
+                            );
                         }
-                    }
-
-                    if(!content){
-
-                        return;
                     }
 
                     var bulk = this._bulk;
@@ -416,10 +681,12 @@
 
                         if((index + content.length) > this._chunk_size){
 
-                            if(content.length > (this._chunk_size / 2)){
+                            if(content.length > (this._chunk_size / 2 - 2)){
 
-                                this._chunk_size = content.length * 2;
+                                this._chunk_size = content.length * 2 + 2;
                             }
+
+                            //content = '~' + content;
 
                             // init new chunk
 
@@ -441,7 +708,7 @@
                             0
                         ];
 
-                        bulk[chunk_index] += content + this.separator;
+                        bulk[chunk_index] += content /*+ (this.strict ? '' : this.separator)*/;
                     }
 
                     if(this._index[chunk_index].constructor === Array){
@@ -453,10 +720,15 @@
                     }
                     else{
 
-                        this._index[chunk_index].fill(id, index, index + content.length + 1);
+                        this._index[chunk_index].fill(id, index, index + content.length /*+ 1*/);
 
                         index += content.length;
                     }
+
+                    //if(!this.strict){
+
+                        //index--;
+                    //}
 
                     // assign end marker
 
@@ -464,22 +736,24 @@
 
                     // push marker to the register
 
-                    if(this.depth){
-
-                        for(var i = this.depth; i > 1; i--){
-
-                            var key = content.substring(0, i);
-
-                            this._register[key] || (this._register[key] = []);
-                            this._register[key].push(marker);
-                        }
-                    }
+                    // if(this.depth){
+                    //
+                    //     for(var i = this.depth; i > 1; i--){
+                    //
+                    //         var key = content.substring(0, i);
+                    //
+                    //         this._register[key] || (this._register[key] = []);
+                    //         this._register[key].push(marker);
+                    //     }
+                    // }
 
                     // update status
 
                     this._status = false;
                 }
             }
+
+            return this;
         };
 
         /**
@@ -495,16 +769,63 @@
 
                 if(marker){
 
+                    if(SUPPORT_WORKER && this.worker){
+
+                        var int = parseInt(this._marker[id], 10);
+
+                        this._worker[int].postMessage(int, {
+
+                            'update': true,
+                            'id': id,
+                            'content': content
+                        });
+
+                        if(!content){
+
+                            delete this._marker[id];
+                        }
+
+                        return this;
+                    }
+
+                    if(SUPPORT_ASYNC && this.async){
+
+                        this._stack[id] || (
+
+                            this._stack_keys[this._stack_keys.length] = id
+                        );
+
+                        this._stack[id] = [
+
+                            enum_task.update,
+                            id,
+                            content
+                        ];
+
+                        register_task(this);
+
+                        return this;
+                    }
+
                     var old_content = content;
 
                     if(content){
 
-                        content = encodeContent.call(this, content);
-                    }
+                        content = encodeContent.call(this, content.trim());
 
-                    if(old_content && !content){
+                        if(!content){
 
-                        return;
+                            return this;
+                        }
+
+                        content = '~' + (
+
+                            this.strict ?
+
+                                content.replace(/ /g, '~')
+                            :
+                                content
+                        );
                     }
 
                     var min = marker[1];
@@ -517,8 +838,12 @@
 
                         // clear content (bypass)
 
-                        content = "";
+                        content = "~";
                     }
+                    // else if(this.strict){
+                    //
+                    //     content = '~' + content;
+                    // }
 
                     // right-padding invalid index
 
@@ -539,7 +864,7 @@
 
                     // check if content length has enlarged
 
-                    if(overlap > 0 || !old_content){
+                    if((overlap > 0) || !old_content){
 
                         // get fragments
 
@@ -561,15 +886,21 @@
                         this._fragment[old_length][current_fragment_length] = marker;
                         this._fragmented += old_length;
 
-                        // delete marker
-
-                        this._marker[id] = null;
-
                         // add overlapping contents to the end
 
                         if(old_content){
 
+                            this._marker[id] = null;
+                            this._scores[id] = 0;
+
                             this.add(id, old_content, encoded_content);
+                        }
+                        else{
+
+                            // delete marker
+
+                            delete this._marker[id];
+                            delete this._scores[id];
                         }
                     }
 
@@ -578,6 +909,8 @@
                     this._status = false;
                 }
             }
+
+            return this;
         };
 
         /**
@@ -590,13 +923,10 @@
             if(this._marker[id]){
 
                 this.update(id, '');
-
-                delete this._marker[id];
-                delete this._scores[id];
             }
-        };
 
-        var regex_split = regex("[ -\/]");
+            return this;
+        };
 
         /**
          * @param {!string|Object} query
@@ -645,7 +975,6 @@
                     if(limit['callback']){
 
                         callback = limit['callback'];
-                        limit['callback'] = false;
                     }
 
                     limit = limit['limit'];
@@ -654,10 +983,27 @@
 
             limit || (limit = 1000);
 
-            if(callback){
+            if(SUPPORT_WORKER && this.worker){
 
-                /** @type {BulkSearch} */
-                var self = this;
+                this._current_callback = callback;
+                this._task_completed = 0;
+                this._task_result = [];
+
+                for(var i = 0; i < this.worker; i++){
+
+                    this._worker[i].postMessage(i, {
+
+                        'search': true,
+                        'limit': limit,
+                        'page': initial_page + ':' + initial_index,
+                        'content': query
+                    });
+                }
+
+                return null;
+            }
+
+            if(callback){
 
                 if(initial_page || initial_index){
 
@@ -667,6 +1013,9 @@
                         'limit': limit
                     };
                 }
+
+                /** @type {BulkSearch} */
+                var self = this;
 
                 queue(function(){
 
@@ -717,9 +1066,13 @@
 
             if(!this._status){
 
-                if(this.cache){
+                if(SUPPORT_CACHE && this.cache){
 
-                    this._last_empty_query = "";
+                    if(typeof this._last_empty_query !== 'undefined'){
+
+                        this._last_empty_query = "";
+                    }
+
                     this._cache.reset();
                 }
 
@@ -728,7 +1081,7 @@
 
             // validate cache
 
-            else if(this.cache){
+            else if(SUPPORT_CACHE && this.cache){
 
                 var cache = this._cache.get(query);
 
@@ -745,23 +1098,20 @@
                 return page || result;
             }
 
-            // remove trailing spaces
+            // encode string
 
-            var spaces = 0;
+            _query = this.encode(/** @type {string} */ (_query.trim()));
 
-            while(query[spaces] === " "){
-
-                spaces++;
-            }
-
-            if(spaces){
-
-                _query = query.substring(spaces);
-            }
-
-            if(!_query){
+            if(!_query.length){
 
                 return page || result;
+            }
+
+            if(this.strict){
+
+                // mask words start and ending
+
+                _query = '~' + _query.replace(/ /g, ' ~');
             }
 
             // convert words into single components
@@ -781,17 +1131,14 @@
 
             if(length > 1){
 
-                words.sort(sort_by_length_down);
+                words.sort(sortByLengthDown);
+
+                var collect_suggestions = this.suggest;
             }
 
-            var encoded = new Array(length);
+            //var encoded = new Array(length);
 
-            // encode query
-
-            if(this.encode && words[0]){
-
-                words[0] = this.encode(words[0]);
-            }
+            var suggestions = [];
 
             // perform search
 
@@ -800,69 +1147,110 @@
                 var start = initial_index;
                 var pos = 0;
                 var bulk = this._bulk[z];
+                var best_score;
+                var initial_word = words[0];
+                var skip_words = 0;
 
                 initial_index = 0;
 
-                while((pos = bulk.indexOf(words[0], start)) !== -1){
+                if(initial_word && (initial_word !== '~')) while(((pos = bulk.indexOf(initial_word, start)) !== -1) || collect_suggestions){
+
+                    if(collect_suggestions && (pos === -1)){
+
+                        skip_words++;
+
+                        if(skip_words === length + 1){
+
+                            break
+                        }
+                        else{
+
+                            collect_suggestions = length > (skip_words + 1);
+                            initial_word = words[skip_words];
+
+                            continue;
+                        }
+                    }
 
                     var current_id = this._index[z][pos];
                     var marker = this._marker[current_id];
 
                     if(marker){
 
+                        var last_pos;
                         var min = marker[1];
                         var max = marker[2];
+                        var context_length = max - min;
                         var matched = true;
+                        var sub_bulk = bulk.substring(min, max);
+                        var match_count = 0;
+
+                        last_pos = pos - marker[1];
+
+                        var partial_score = last_pos - sub_bulk.lastIndexOf('~', last_pos);
+
+                        best_score = context_length / (context_length - last_pos) + partial_score / 3;
 
                         // check multiple word components
 
                         if(length > 1){
 
-                            var sub_bulk = bulk.substring(min, max);
+                            var check_words = {};
+                            check_words[initial_word] = "1";
 
                             for(var i = 1; i < length; i++){
 
-                                if(words[i]){
+                                var value = words[i];
 
-                                    // encode query
+                                if(value && (value !== '~') && !check_words[value]){
 
-                                    if(this.encode && !encoded[i]){
+                                    // supports contextual search
 
-                                        words[i] = this.encode(words[i]);
-                                        encoded[i] = true;
-                                    }
+                                    var current_pos_reverse = sub_bulk.lastIndexOf(value, last_pos);
+                                    var current_pos_forward = sub_bulk.indexOf(value, last_pos);
 
-                                    if(sub_bulk.indexOf(words[i]) === -1){
+                                    if((current_pos_forward === -1) && (current_pos_reverse === -1)){
 
-                                        // boolean and:
+                                        matched = false;
 
-                                        if(!this.boolean){
+                                        if(collect_suggestions){
 
-                                            matched = false;
-                                            break;
+                                            best_score += context_length;
                                         }
                                         else{
 
-                                            matched = false;
+                                            break;
                                         }
                                     }
                                     else{
 
-                                        // boolean or:
+                                        match_count++;
 
-                                        if(this.boolean){
 
-                                            matched = true;
-                                            break;
+                                        if((current_pos_forward === -1) || ((current_pos_reverse !== -1) && ((last_pos - current_pos_reverse) < (current_pos_forward - last_pos)))){
+
+                                            partial_score = current_pos_reverse - sub_bulk.lastIndexOf('~', current_pos_reverse);
+                                            best_score += context_length / (context_length - (last_pos - current_pos_reverse) ) + partial_score * 2;
+                                            last_pos = current_pos_reverse;
+                                        }
+                                        else{
+
+                                            partial_score = current_pos_forward - sub_bulk.lastIndexOf('~', current_pos_forward);
+                                            best_score += context_length / (context_length - (current_pos_forward - last_pos) ) + partial_score * 2;
+                                            last_pos = current_pos_forward;
                                         }
                                     }
+
+                                    check_words[value] = "1";
                                 }
                             }
+
+                            best_score /= length;
                         }
 
                         // shift pointer (query was done for a specific entry)
 
-                        pos = max;
+                        pos = max - 1;
 
                         // collect results
 
@@ -872,21 +1260,30 @@
 
                             this._scores[current_id] ? this._scores[current_id]++ : this._scores[current_id] = 1;
 
-                            // TODO enrich results
-                            // result[result.length] = {
-                            //
-                            //     'id': current_id,
-                            //     'rank': scores[sub_bulk],
-                            //     'score': 1.0
-                            // };
+                            result[result.length] = {
 
-                            result[result.length] = current_id;
+                                'score': best_score,
+                                'id': current_id
+                            };
 
                             // apply limit
 
                             if(limit && (result.length === limit)){
 
                                 break;
+                            }
+                        }
+                        else{
+
+                            if(collect_suggestions){
+
+                                var current_suggestion = suggestions[match_count] || (suggestions[match_count] = []);
+
+                                current_suggestion[current_suggestion.length] = {
+
+                                    'score': best_score, //match_count * -1,
+                                    'id': current_id
+                                };
                             }
                         }
                     }
@@ -909,7 +1306,44 @@
                 }
             }
 
+            if(!result.length && collect_suggestions){
+
+                var suggestion_limit = limit || 1000;
+                var count = result.length;
+                length = suggestions.length;
+
+                if((count < suggestion_limit) && length){
+
+                    for(var a = length - 1; a >= 0; a--){
+
+                        var tmp = suggestions[a];
+
+                        if(tmp){
+
+                            for(i = 0; i < tmp.length; i++){
+
+                                result[count++] = tmp[i];
+
+                                if(suggestion_limit && (count === suggestion_limit)){
+
+                                    a = -1;
+
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             if(result.length){
+
+                result.sort(sortByScoreUp);
+
+                for(var i = 0; i < result.length; i++){
+
+                    result[i] = result[i]['id'];
+                }
 
                 this._last_empty_query = "";
             }
@@ -920,29 +1354,12 @@
 
             // store result to cache
 
-            if(this.cache){
+            if(SUPPORT_CACHE && this.cache){
 
                 this._cache.set(query, page || result);
             }
 
             return page || result;
-        };
-
-        /**
-         * @param {Object<string, string>} matcher
-         * @export
-         */
-
-        BulkSearch.prototype.addMatcher = function(matcher){
-
-            for(var key in matcher){
-
-                if(matcher.hasOwnProperty(key)){
-
-                    this._matcher[this._matcher.length] = regex(key);
-                    this._matcher[this._matcher.length] = matcher[key];
-                }
-            }
         };
 
         /**
@@ -996,9 +1413,10 @@
                 if(marker){
 
                     var bulk = old_bulk[marker[0]];
+                    // TODO why +1?
                     var current_value = bulk.substring(marker[1], marker[2]);
 
-                    this.add(key, current_value);
+                    this.add(key, current_value, current_value);
                 }
                 else{
 
@@ -1018,48 +1436,53 @@
             this._scores = old_scores;
         };
 
-        /**
-         * @this {BulkSearch}
-         * @export
-         */
+        if(SUPPORT_DEBUG){
 
-        BulkSearch.prototype.info = function(){
+            /**
+             * @this {BulkSearch}
+             * @export
+             */
 
-            var fragmented = this._fragmented;
-            var marker_length = Object.keys(this._marker).length;
-            var fragment_length = Object.keys(this._fragment).length;
-            var register_length = Object.keys(this._register).length;
-            var bytes = 0;
-            var length = 0;
+            BulkSearch.prototype.info = function(){
 
-            for(var z = 0; z < this._bulk.length; z++){
+                var fragmented = this._fragmented;
+                var marker_length = Object.keys(this._marker).length;
+                var fragment_length = Object.keys(this._fragment).length;
+                var register_length = Object.keys(this._register).length;
+                var bytes = 0;
+                var length = 0;
 
-                length += this._bulk[z].length;
-            }
+                for(var z = 0; z < this._bulk.length; z++){
 
-            if(length){
+                    length += this._bulk[z].length;
+                }
 
-                fragmented = ((100 / length * fragmented * 100) | 0) / 100;
+                if(length){
 
-                bytes = this._index[0].byteLength || (length * 32);
-                bytes += (length * 2) + ((marker_length + fragment_length + register_length) * 8 * 3);
-            }
+                    fragmented = ((100 / length * fragmented * 100) | 0) / 100;
 
-            return {
+                    bytes = this._index[0].byteLength || (length * 32);
+                    bytes += (length * 2) + ((marker_length + fragment_length + register_length) * 8 * 3);
+                }
 
-                'id': this.id,
-                'length': marker_length,
-                'chunks': this._bulk.length,
-                'register': register_length,
-                'depth': this.depth,
-                'size': this._chunk_size,
-                'bytes': bytes,
-                'fragments': fragment_length,
-                'fragmented': fragmented,
-                'status': this._status,
-                'matchers': global_matcher.length
+                return {
+
+                    'id': this.id,
+                    'length': marker_length,
+                    'chunks': this._bulk.length,
+                    'register': register_length,
+                    //'depth': this.depth,
+                    'size': this._chunk_size,
+                    'bytes': bytes,
+                    'fragments': fragment_length,
+                    'fragmented': fragmented,
+                    'status': this._status,
+                    'cache': this._stack_keys.length,
+                    'matcher': global_matcher.length,
+                    'worker': this.worker
+                };
             };
-        };
+        }
 
         /**
          * @this {BulkSearch}
@@ -1074,7 +1497,7 @@
 
             // initialize index
 
-            this.init();
+            return this.init();
         };
 
         /**
@@ -1101,32 +1524,65 @@
             this._cache =
             this._scores =
             this._matcher =
-            this._pages = null;
+            this._pages =
+            this._stack =
+            this._stack_keys = null;
+
+            return this;
+        };
+
+        /** @const */
+
+        var global_encoder_balance = (function(){
+
+            var regex_whitespace = regex('\\s\\s+'),
+                regex_strip = regex('[^a-z0-9 ]'),
+                regex_space = regex('[-\/]'),
+                regex_vowel = regex('[aeiouy]');
+
+            /** @const {Array} */
+            var regex_pairs = [
+
+                regex_space, ' ',
+                regex_strip, '',
+                regex_whitespace, ' '
+                //regex_vowel, ''
+            ];
+
+            return function(value){
+
+                return collapseRepeatingChars(replace(value.toLowerCase(), regex_pairs));
+            }
+        })();
+
+        /** @const */
+
+        var global_encoder_icase = function(value){
+
+            return value.toLowerCase();
         };
 
         /**
          * Phonetic Encoders
-         * @enum {Function}
+         * @dict {Function}
          * @private
          * @const
          * @final
          */
 
-        var global_encoder = {
+        var global_encoder = SUPPORT_BUILTINS ? {
 
             // case insensitive search
 
-            'icase': function(value){
-
-                return value.toLowerCase();
-            },
+            'icase': global_encoder_icase,
 
             // simple phonetic normalization (latin)
 
             'simple': (function(){
 
-                var regex_strip = regex('[^a-z0-9 ]'),
-                    regex_split = regex('[-/]'),
+                var regex_whitespace = regex('\\s\\s+'),
+                    regex_strip = regex('[^a-z0-9 ]'),
+                    regex_split = regex('[-\/]'),
                     regex_a = regex('[àáâãäå]'),
                     regex_e = regex('[èéêë]'),
                     regex_i = regex('[ìíîï]'),
@@ -1135,8 +1591,10 @@
                     regex_y = regex('[ýŷÿ]'),
                     regex_n = regex('ñ'),
                     regex_c = regex('ç'),
-                    regex_s = regex('ß');
+                    regex_s = regex('ß'),
+                    regex_and = regex(' & ');
 
+                /** @const {Array} */
                 var regex_pairs = [
 
                     regex_a, 'a',
@@ -1148,15 +1606,19 @@
                     regex_n, 'n',
                     regex_c, 'c',
                     regex_s, 's',
+                    regex_and, ' and ',
                     regex_split, ' ',
-                    regex_strip, ''
+                    regex_strip, '',
+                    regex_whitespace, ' '
                 ];
 
                 return function(str){
 
+                    str = replace(str.toLowerCase(), regex_pairs);
+
                     return (
 
-                        replace(str.toLowerCase(), regex_pairs)
+                        str !== ' ' ? str : ''
                     );
                 };
             }()),
@@ -1181,9 +1643,11 @@
                     //regex_th = regex('th'),
                     regex_dt = regex('dt'),
                     regex_ph = regex('ph'),
+                    regex_pf = regex('pf'),
                     regex_ou = regex('ou'),
                     regex_uo = regex('uo');
 
+                /** @const {Array} */
                 var regex_pairs = [
 
                     regex_ae, 'a',
@@ -1201,11 +1665,12 @@
                     //regex_th, 't',
                     regex_dt, 't',
                     regex_ph, 'f',
+                    regex_pf, 'f',
                     regex_ou, 'o',
                     regex_uo, 'u'
                 ];
 
-                return function(string, _skip_post_processing){
+                return /** @this {global_encoder} */ function(string, _skip_post_processing){
 
                     if(!string){
 
@@ -1213,7 +1678,7 @@
                     }
 
                     // perform simple encoding
-                    string = global_encoder['simple'](string);
+                    string = this['simple'](string);
 
                     // normalize special pairs
                     if(string.length > 2){
@@ -1224,7 +1689,7 @@
                     if(!_skip_post_processing){
 
                         // remove white spaces
-                        string = string.replace(regex_space, '');
+                        //string = string.replace(regex_space, '');
 
                         // delete all repeating chars
                         if(string.length > 1){
@@ -1241,28 +1706,31 @@
             'extra': (function(){
 
                 var soundex_b = regex('p'),
-                    soundex_c = regex('[sz]'),
-                    soundex_k = regex('[gq]'),
-                    soundex_i = regex('[jy]'),
+                    //soundex_c = regex('[sz]'),
+                    soundex_s = regex('z'),
+                    soundex_k = regex('[cgq]'),
+                    //soundex_i = regex('[jy]'),
                     soundex_m = regex('n'),
                     soundex_t = regex('d'),
                     soundex_f = regex('[vw]');
 
+                /** @const {RegExp} */
                 var regex_vowel = regex('[aeiouy]');
 
+                /** @const {Array} */
                 var regex_pairs = [
 
                     soundex_b, 'b',
-                    soundex_c, 'c',
+                    soundex_s, 's',
                     soundex_k, 'k',
-                    soundex_i, 'i',
+                    //soundex_i, 'i',
                     soundex_m, 'm',
                     soundex_t, 't',
                     soundex_f, 'f',
                     regex_vowel, ''
                 ];
 
-                return function(str){
+                return /** @this {global_encoder} */ function(str){
 
                     if(!str){
 
@@ -1270,11 +1738,11 @@
                     }
 
                     // perform advanced encoding
-                    str = global_encoder['advanced'](str, /* skip post processing? */ true);
+                    str = this['advanced'](str, /* skip post processing? */ true);
 
                     if(str.length > 1){
 
-                        str = str.split(regex_split);
+                        str = str.split(" ");
 
                         for(var i = 0; i < str.length; i++){
 
@@ -1287,29 +1755,180 @@
                             }
                         }
 
-                        str = str.join("");
+                        str = str.join(" ");
                         str = collapseRepeatingChars(str);
                     }
 
                     return str;
                 };
-            })()
+            })(),
 
-            // TODO: provide some common encoder plugins
-            // soundex
-            // cologne
-            // metaphone
-            // caverphone
-            // levinshtein
-            // hamming
-            // matchrating
-            // ngram
+            'balance': global_encoder_balance
+
+        } : {
+
+            'icase': global_encoder_icase,
+            'balance': global_encoder_balance
         };
+
+        // Xone Async Handler Fallback
+
+        var queue = SUPPORT_ASYNC ? (function(){
+
+            var stack = {};
+
+            return function(fn, delay, id){
+
+                var timer = stack[id];
+
+                if(timer){
+
+                    clearTimeout(timer);
+                }
+
+                return (
+
+                    stack[id] = setTimeout(fn, delay)
+                );
+            };
+
+        })() : null;
+
+        // Flexi-Cache
+
+        var cache = SUPPORT_CACHE ? (function(){
+
+            /** @this {Cache} */
+            function Cache(limit){
+
+                this.reset();
+
+                this.limit = (limit !== true) && limit;
+            }
+
+            /** @this {Cache} */
+            Cache.prototype.reset = function(){
+
+                this.cache = {};
+                this.count = {};
+                this.index = {};
+                this.keys = [];
+            };
+
+            /** @this {Cache} */
+            Cache.prototype.set = function(id, value){
+
+                if(this.limit && (typeof this.cache[id] === 'undefined')){
+
+                    var length = this.keys.length;
+
+                    if(length === this.limit){
+
+                        length--;
+
+                        var last_id = this.keys[length];
+
+                        delete this.cache[last_id];
+                        delete this.count[last_id];
+                        delete this.index[last_id];
+                    }
+
+                    this.index[id] = length;
+                    this.keys[length] = id;
+                    this.count[id] = -1;
+                    this.cache[id] = value;
+
+                    // shift up counter +1
+
+                    this.get(id);
+                }
+                else{
+
+                    this.cache[id] = value;
+                }
+            };
+
+            /**
+             * Note: It is better to have the complexity when fetching the cache:
+             * @this {Cache}
+             */
+
+            Cache.prototype.get = function(id){
+
+                var cache = this.cache[id];
+
+                if(this.limit && cache){
+
+                    var count = ++this.count[id];
+                    var index = this.index;
+                    var current_index = index[id];
+
+                    if(current_index > 0){
+
+                        var keys = this.keys;
+                        var old_index = current_index;
+
+                        // forward pointer
+                        while(this.count[keys[--current_index]] <= count){
+
+                            if(current_index === -1){
+
+                                break;
+                            }
+                        }
+
+                        // move pointer back
+                        current_index++;
+
+                        if(current_index !== old_index){
+
+                            // copy values from predecessors
+                            for(var i = old_index; i > current_index; i--) {
+
+                                var key = keys[i - 1];
+
+                                keys[i] = key;
+                                index[key] = i;
+                            }
+
+                            // push new value on top
+                            keys[current_index] = id;
+                            index[id] = current_index;
+                        }
+                    }
+                }
+
+                return cache;
+            };
+
+            return Cache;
+
+        })() : null;
 
         return BulkSearch;
 
         // ---------------------------------------------------------
         // Helpers
+
+        function registerProperty(obj, key, fn){
+
+            // define functional properties
+
+            Object.defineProperty(obj, key, {
+
+                get: fn
+            });
+        }
+
+        /**
+         * @param {!string} str
+         * @returns {RegExp}
+         */
+
+        function regex(str){
+
+            return new RegExp(str, 'g');
+        }
 
         function create_typed_array(type, size){
 
@@ -1345,16 +1964,6 @@
 
         /**
          * @param {!string} str
-         * @returns {RegExp}
-         */
-
-        function regex(str){
-
-            return new RegExp(str, 'g');
-        }
-
-        /**
-         * @param {!string} str
          * @param {RegExp|Array} regex
          * @param {string=} replacement
          * @returns {string}
@@ -1383,7 +1992,7 @@
          * @returns {number}
          */
 
-        function sort_by_length_down(a, b){
+        function sortByLengthDown(a, b){
 
             var diff = a.length - b.length;
 
@@ -1396,6 +2005,31 @@
                     diff > 0 ?
 
                         -1
+                    :
+                        0
+                )
+            );
+        }
+
+        /**
+         * @param {!Array|string} a
+         * @param {!Array|string} b
+         * @returns {number}
+         */
+
+        function sortByScoreUp(a, b){
+
+            var diff = a['score'] - b['score'];
+
+            return (
+
+                diff < 0 ?
+
+                    -1
+                :(
+                    diff > 0 ?
+
+                        1
                     :
                         0
                 )
@@ -1419,29 +2053,29 @@
 
                 if(char !== char_prev){
 
-                    if(i > 0 && char === 'h'){
+                    if(i && (char === 'h')){
 
                         var char_prev_is_vowel = (
 
-                            char_prev === 'a' ||
-                            char_prev === 'e' ||
-                            char_prev === 'i' ||
-                            char_prev === 'o' ||
-                            char_prev === 'u' ||
-                            char_prev === 'y'
+                            (char_prev === 'a') ||
+                            (char_prev === 'e') ||
+                            (char_prev === 'i') ||
+                            (char_prev === 'o') ||
+                            (char_prev === 'u') ||
+                            (char_prev === 'y')
                         );
 
                         var char_next_is_vowel = (
 
-                            char_next === 'a' ||
-                            char_next === 'e' ||
-                            char_next === 'i' ||
-                            char_next === 'o' ||
-                            char_next === 'u' ||
-                            char_next === 'y'
+                            (char_next === 'a') ||
+                            (char_next === 'e') ||
+                            (char_next === 'i') ||
+                            (char_next === 'o') ||
+                            (char_next === 'u') ||
+                            (char_next === 'y')
                         );
 
-                        if(char_prev_is_vowel && char_next_is_vowel){
+                        if((char_prev_is_vowel && char_next_is_vowel) || (char_prev === ' ')){
 
                             collapsed_string += char;
                         }
@@ -1454,7 +2088,7 @@
 
                 char_next = (
 
-                    (i === string.length - 1) ?
+                    (i === (string.length - 1)) ?
 
                         ''
                     :
@@ -1477,8 +2111,8 @@
 
             var dupes = {};
             var words = content.split(regex_split);
-
-            content = "";
+            var result = [];
+            var count = 0;
 
             for(var i = 0; i < words.length; i++){
 
@@ -1486,78 +2120,377 @@
 
                 if(value){
 
-                    if(this.encode){
+                    if(!dupes[value]){
 
-                        value = this.encode(value);
+                        dupes[value] = "1";
+
+                        result[count++] = this.encode(value);
+                    }
+                }
+            }
+
+            return result.join('~');
+        }
+
+        /**
+         * @param {Array<string>} words
+         * @param encoder
+         * @returns {Object<string, string>}
+         */
+
+        function initFilter(words, encoder){
+
+            var final = {};
+
+            if(words){
+
+                for(var i = 0; i < words.length; i++){
+
+                    var word = encoder ? encoder.call(global_encoder, words[i]) : words[i];
+
+                    final[word] = String.fromCharCode((65000 - words.length) + i);
+                }
+            }
+
+            return final;
+        }
+
+        /**
+         * @param {Object<string, string>} stemmer
+         * @param encoder
+         * @returns {Array}
+         */
+
+        function initStemmer(stemmer, encoder){
+
+            var final = [];
+
+            if(stemmer){
+
+                var count = 0;
+
+                for(var key in stemmer){
+
+                    if(stemmer.hasOwnProperty(key)){
+
+                        var tmp = encoder ? encoder.call(global_encoder, key) : key;
+
+                        final[count++] = regex('(?=.{' + (tmp.length + 3) + ',})' + tmp + '$');
+                        final[count++] = encoder ? encoder.call(global_encoder, stemmer[key]) : stemmer[key];
+                    }
+                }
+            }
+
+            return final;
+        }
+
+        /**
+         * @param {BulkSearch} ref
+         */
+
+        function runner(ref){
+
+            var async = ref.async;
+            var current;
+
+            if(async){
+
+                ref.async = false;
+            }
+
+            if(ref._stack_keys.length){
+
+                var start = time();
+                var key;
+
+                while((key = ref._stack_keys.shift()) || (key === 0)){
+
+                    current = ref._stack[key];
+
+                    switch(current[0]){
+
+                        case enum_task.add:
+
+                            ref.add(current[1], current[2]);
+                            break;
+
+                        case enum_task.update:
+
+                            ref.update(current[1], current[2]);
+                            break;
+
+                        // case enum_task.remove:
+                        //
+                        //     ref.remove(current[1]);
+                        //     break;
                     }
 
-                    if(value){
+                    ref._stack[key] = null;
+                    delete ref._stack[key];
 
-                        if(!dupes[value]){
+                    if((time() - start) > 100){
 
-                            dupes[value] = "1";
+                        break;
+                    }
+                }
 
-                            content += value;
+                if(ref._stack_keys.length){
+
+                    register_task(ref);
+                }
+            }
+
+            if(async){
+
+                ref.async = async;
+            }
+        }
+
+        /**
+         * @param {BulkSearch} ref
+         */
+
+        function register_task(ref){
+
+            ref._timer || (
+
+                ref._timer = queue(function(){
+
+                    ref._timer = null;
+
+                    runner(ref);
+
+                }, 1, 'search-async-' + ref.id)
+            );
+        }
+
+        /**
+         * @returns {number}
+         */
+
+        function time(){
+
+            return (
+
+                typeof performance !== 'undefined' ?
+
+                    performance.now()
+                    :
+                    (new Date()).getTime()
+            );
+        }
+
+        function add_worker(id, core, options, callback){
+
+            var thread = register_worker(
+
+                // name:
+                'bulksearch',
+
+                // id:
+                'id' + id,
+
+                // worker:
+                function(){
+
+                    var id;
+
+                    /** @type {BulkSearch} */
+                    var bulksearch;
+
+                    /** @lends {Worker} */
+                    self.onmessage = function(event){
+
+                        var data = event['data'];
+
+                        if(data){
+
+                            // if(bulksearch.debug){
+                            //
+                            //     console.log("Worker Job Started: " + data['id']);
+                            // }
+
+                            if(data['search']){
+
+                                var results = bulksearch['search'](data['content'],
+
+                                    data['threshold'] ?
+
+                                        {
+                                            'limit': data['limit'],
+                                            'threshold': data['threshold']
+                                        }
+                                    :
+                                        data['limit']
+                                );
+
+                                /** @lends {Worker} */
+                                self.postMessage({
+
+                                    'id': id,
+                                    'content': data['content'],
+                                    'limit': data['limit'],
+                                    'result':results
+                                });
+                            }
+                            else if(data['add']){
+
+                                bulksearch['add'](data['id'], data['content']);
+                            }
+                            else if(data['update']){
+
+                                bulksearch['update'](data['id'], data['content']);
+                            }
+                            else if(data['remove']){
+
+                                bulksearch['remove'](data['id']);
+                            }
+                            else if(data['reset']){
+
+                                bulksearch['reset']();
+                            }
+                            else if(data['info']){
+
+                                var info = bulksearch['info']();
+
+                                info['worker'] = id;
+
+                                if(bulksearch.debug){
+
+                                    console.log(info);
+                                }
+
+                                /** @lends {Worker} */
+                                //self.postMessage(info);
+                            }
+                            else if(data['register']){
+
+                                id = data['id'];
+
+                                data['options']['cache'] = false;
+                                data['options']['async'] = true;
+                                data['options']['worker'] = false;
+
+                                bulksearch = new Function(
+
+                                    data['register'].substring(
+
+                                        data['register'].indexOf('{') + 1,
+                                        data['register'].lastIndexOf('}')
+                                    )
+                                )();
+
+                                bulksearch = new bulksearch(data['options']);
+                            }
+                        }
+                    };
+                },
+
+                // callback:
+                function(event){
+
+                    var data = event['data'];
+
+                    if(data && data['result']){
+
+                        callback(data['id'], data['content'], data['result'], data['limit']);
+                    }
+                    else{
+
+                        if(SUPPORT_DEBUG && options['debug']){
+
+                            console.log(data);
                         }
                     }
-                }
-            }
+                },
 
-            return content;
+                // cores:
+                core
+            );
+
+            var fn_str = factory.toString();
+
+            options['id'] = core;
+
+            thread.postMessage(core, {
+
+                'register': fn_str,
+                'options': options,
+                'id': core
+            });
+
+            return thread;
         }
     })(
-        // Xone Async Handler Fallback
+        // Xone Worker Handler Fallback
 
-        (function(){
+        SUPPORT_WORKER ? (function register_worker(){
 
-            var stack = {};
+            var worker_stack = {};
+            var inline_is_supported = !!((typeof Blob !== 'undefined') && (typeof URL !== 'undefined') && URL.createObjectURL);
 
-            return function(fn, delay, id){
+            return (
 
-                var timer = stack[id];
+                /**
+                 * @param {!string} _name
+                 * @param {!number|string} _id
+                 * @param {!Function} _worker
+                 * @param {!Function} _callback
+                 * @param {number=} _core
+                 */
 
-                if(timer){
+                function(_name, _id, _worker, _callback, _core){
 
-                    clearTimeout(timer);
+                    var name = _name;
+                    var worker_payload = (
+
+                        inline_is_supported ?
+
+                            /* Load Inline Worker */
+
+                            URL.createObjectURL(
+
+                                new Blob([
+
+                                    'var SUPPORT_WORKER = true;' +
+                                    'var SUPPORT_BUILTINS = ' + (SUPPORT_BUILTINS ? 'true' : 'false') + ';' +
+                                    'var SUPPORT_DEBUG = ' + (SUPPORT_DEBUG ? 'true' : 'false') + ';' +
+                                    'var SUPPORT_CACHE = ' + (SUPPORT_CACHE ? 'true' : 'false') + ';' +
+                                    'var SUPPORT_ASYNC = ' + (SUPPORT_ASYNC ? 'true' : 'false') + ';' +
+                                    '(' + _worker.toString() + ')()'
+                                ],{
+                                    'type': 'text/javascript'
+                                })
+                            )
+                            :
+
+                            /* Load Extern Worker (but also requires CORS) */
+
+                            '../' + name + '.js'
+                    );
+
+                    name += '-' + _id;
+
+                    worker_stack[name] || (worker_stack[name] = []);
+
+                    worker_stack[name][_core] = new Worker(worker_payload);
+                    worker_stack[name][_core]['onmessage'] = _callback;
+
+                    if(SUPPORT_DEBUG){
+
+                        console.log('Register Worker: ' + name + '@' + _core);
+                    }
+
+                    return {
+
+                        'postMessage': function(id, data){
+
+                            worker_stack[name][id]['postMessage'](data);
+                        }
+                    };
                 }
-
-                return (
-
-                    stack[id] = setTimeout(fn, delay)
-                );
-            };
-        })(),
-
-        // Xone Flexi-Cache Handler Fallback
-
-        (function(){
-
-            /** @this {Cache} */
-            function Cache(){
-
-                this.cache = {};
-            }
-
-            /** @this {Cache} */
-            Cache.prototype.reset = function(){
-
-                this.cache = {};
-            };
-
-            /** @this {Cache} */
-            Cache.prototype.set = function(id, value){
-
-                this.cache[id] = value;
-            };
-
-            /** @this {Cache} */
-            Cache.prototype.get = function(id){
-
-                return this.cache[id];
-            };
-
-            return Cache;
-        })()
+            );
+        })() : false
 
     ), this);
 

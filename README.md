@@ -2,9 +2,21 @@
 
 ### Superfast, lightweight and read-write optimized full text search library.
 
-When it comes to the overall speed, BulkSearch outperforms every searching library out there and also provides flexible search capabilities like multi-word, phonetics or partial matching. It is basically based on how a hdd manage their filesystem. Adding, updating or removing items are also fast as searching for them, but also requires some additional amount of memory. When your index don't needs to be updated continuously then <a href="https://github.com/nextapps-de/flexsearch" target="_blank">FlexSearch</a> may be a better choice. BulkSearch also provides you a asynchronous processing model to perform any updates on the index in background. 
+When it comes to the __overall speed__, BulkSearch outperforms every searching library out there and also provides flexible search capabilities like multi-word matching, phonetic transformations or partial matching. It is basically based on how a hdd manage files on the filesystem. Adding, updating or removing items are also fast as searching for them, but also requires some additional amount of memory. When your index don't needs to be updated continuously then <a href="flexsearch/" target="_blank">FlexSearch</a> may be a better choice. BulkSearch also provides you a asynchronous processing model to perform queries in background. 
 
-Benchmark: <a href="https://jsperf.com/bulksearch" target="_blank">https://jsperf.com/bulksearch</a>
+Benchmark:
+- Comparison: <a href="https://jsperf.com/compare-search-libraries" target="_blank">https://jsperf.com/compare-search-libraries</a>
+- Detailed: <a href="https://jsperf.com/bulksearch" target="_blank">https://jsperf.com/bulksearch</a>
+
+Supported Platforms:
+- Browser
+- Node.js
+
+Supported Module Definitions:
+- AMD (RequireJS)
+- CommonJS (Node.js)
+- Closure (Xone)
+- Global (Browser)
 
 All Features:
 <ul>
@@ -61,6 +73,46 @@ __AMD__
 ```javascript
 var BulkSearch = require("./bulksearch.js");
 ```
+
+#### Compare BulkSearch vs. FlexSearch
+
+<table>
+    <tr></tr>
+    <tr>
+        <th align="left">Description</th>
+        <th align="left">BulkSearch</th>
+        <th align="left">FlexSearch</th>
+    </tr>
+    <tr>
+        <td>Access</td>
+        <td>Read-Write optimized index</td>
+        <td>Read-Memory optimized index</td>
+    </tr>
+    <tr></tr>
+    <tr>
+        <td>Memory</td>
+        <td>Large (~ 90 bytes per word)</td>
+        <td>Tiny (~ 2 bytes per word)</td>
+    </tr>
+    <tr></tr>
+    <tr>
+        <td>Usage</td>
+        <td><ul><li>Limited content</li><li>Index updates continously</li></ul></td>
+        <td><ul><li>Fastest possible search</li><li>Rare updates on index</li><li>Low memory capabilities</li></ul></td>
+    </tr>
+    <tr></tr>
+    <tr>
+        <td>Limit Results</td>
+        <td>Yes</td>
+        <td>Yes</td>
+    </tr>
+    <tr></tr>
+    <tr>
+        <td>Pagination</td>
+        <td>Yes</td>
+        <td>No</td>
+    </tr>
+</table>
 
 ## API Overview
 
@@ -448,12 +500,14 @@ index.search("John", {
         <td>2500 - 10000</td>
         <td>The size of chunks. It depends on content length which value fits best. Short content length (e.g. User names) are faster with a chunk size of 2,500. Bigger text runs faster with a chunk size of 10,000. <b>Note:</b> It is recommended to use a minimum chunk size of the maximum content length which has to be indexed to prevent fragmentation.</td>
     </tr>
+    <!--
     <tr></tr>
     <tr>
         <td align="top">depth</td>
         <td>0 - 6</td>
         <td>Set the depth of register. It is recommended to use a value in relation to the number of stored index and content length for an optimum performance-memory value. <b>Note:</b> Increase this options carefully!</td>
     </tr>
+    -->
     <tr></tr>
     <tr>
         <td align="top">multi</td>
@@ -499,7 +553,6 @@ index.search("John", {
     <tr>
         <th align="left">Encoder</th>
         <th align="left">Description</th>
-        <th align="left">Example</th>
         <th align="left">False Positives</th>
         <th align="left">Compression Level</th>
     </tr>
@@ -507,10 +560,6 @@ index.search("John", {
     <tr>
         <td><b>false</b></td>
         <td>Turn off encoding</td>
-        <td>
-            Reference: "Björn-Phillipp Mayer"<br>
-            Matches: "Phil"
-        </td>
         <td>no</td>
         <td>no</td>
     </tr>
@@ -518,10 +567,6 @@ index.search("John", {
     <tr>
         <td><b>"icase"</b></td>
         <td>Case in-sensitive encoding</td>
-        <td>
-            Reference: "Björn-Phillipp Mayer"<br>
-            Matches: "phil"
-        </td>
         <td>no</td>
         <td>no</td>
     </tr>
@@ -529,10 +574,6 @@ index.search("John", {
     <tr>
         <td><b>"simple"</b></td>
         <td>Phonetic normalizations</td>
-        <td>
-            Reference: "Björn-Phillipp Mayer"<br>
-            Matches: "bjoern fillip"
-        </td>
         <td>no</td>
         <td>~ 3%</td>
     </tr>
@@ -540,10 +581,6 @@ index.search("John", {
     <tr>
         <td><b>"advanced"</b></td>
         <td>Phonetic normalizations + Literal transformations</td>
-        <td>
-            Reference: "Björn-Phillipp Mayer"<br>
-            Matches: "filip meier"
-        </td>
         <td>no</td>
         <td>~ 25%</td>
     </tr>
@@ -551,10 +588,6 @@ index.search("John", {
     <tr>
         <td><b>"extra"</b></td>
         <td>Phonetic normalizations + Soundex transformations</td>
-        <td>
-            Reference: "Björn-Phillipp Mayer"<br>
-            Matches: "byorn mair"
-        </td>
         <td>yes</td>
         <td>~ 50%</td>
     </tr>

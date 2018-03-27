@@ -1,13 +1,16 @@
 {
   "name": "bulksearch",
-  "version": "0.1.26",
+  "version": "0.1.3",
   "description": "Superfast, lightweight and read-write optimized full text search library.",
+  "homepage": "https://nextapps-de.github.io/xone/",
+  "author": "Thomas Wilkerling",
+  "license": "Apache-2.0",
   "keywords": [],
   "bugs": {
     "url": "https://github.com/nextapps-de/bulksearch/issues",
     "email": "info@nextapps.de"
   },
-  "main": "bulksearch.js",
+  "main": "bulksearch.min.js",
   "preferGlobal": false,
   "bin": {},
   "repository": {
@@ -15,22 +18,25 @@
     "url": "https://github.com/nextapps-de/bulksearch.git"
   },
   "scripts": {
-    "build": "java -jar -Xms256m -Xmx4096m node_modules/google-closure-compiler/compiler.jar --compilation_level=ADVANCED_OPTIMIZATIONS --use_types_for_optimization=true --new_type_inf=true --jscomp_warning=newCheckTypes --generate_exports=true --export_local_property_definitions=true --language_in=ECMASCRIPT5_STRICT --language_out=ECMASCRIPT5_STRICT --process_closure_primitives=true --summary_detail_level=3 --warning_level=VERBOSE --emit_use_strict=true --output_manifest=log/manifest.log --output_module_dependencies=log/module_dependencies.log --property_renaming_report=log/renaming_report.log --js='bulksearch.js' --js_output_file='bulksearch.min.js' && echo Build Complete. && exit 0",
+    "build": "node compile RELEASE=min SUPPORT_DEBUG=true SUPPORT_WORKER=true SUPPORT_BUILTINS=true SUPPORT_CACHE=true SUPPORT_ASYNC=true && exit 0",
+    "build-light": "node compile RELEASE=light && exit 0",
+    "build-custom": "node compile",
+    "build-lang": "node compile RELEASE=lang && exit 0",
+    "build-all": "npm run build && npm run build-light && npm run build-lang",
     "test-production": "nyc --reporter=html --reporter=text mocha --timeout=3000 test --exit",
+    "test-light": "nyc --reporter=html --reporter=text mocha --timeout=3000 test/ --exit",
     "test-develop": "nyc --reporter=html --reporter=text mocha --timeout=3000 --exit",
     "test-browser": "mocha-phantomjs test/index.html",
     "test": "npm run test-develop && npm run test-production && npm run test-browser",
     "update": "node_modules/.bin/updtr --to non-breaking",
-    "coverage": "nyc report --reporter=text-lcov | coveralls"
+    "coverage": "nyc report --reporter=lcov --reporter=text-lcov | coveralls"
   },
   "files": [
     "bulksearch.js",
     "bulksearch.min.js",
+    "lang/",
     "test/"
   ],
-  "homepage": "https://nextapps-de.github.io/xone/",
-  "author": "Thomas Wilkerling",
-  "license": "Apache-2.0",
   "dependencies": {},
   "devDependencies": {
     "chai": "^4.1.2",
