@@ -1,6 +1,6 @@
 # BulkSearch
 
-### Superfast, lightweight and read-write optimized full text search library.
+### Lightweight and read-write optimized full text search library.
 
 When it comes to the __overall speed__, BulkSearch outperforms every searching library out there and also provides flexible search capabilities like multi-word matching, phonetic transformations or partial matching. It is essentially based on how a HDD manages files in a filesystem. Adding, updating or removing items are as fast as searching for them, but also consumes some additional memory. When your index doesn't need to be updated frequently then <a href="flexsearch/" target="_blank">FlexSearch</a> may be a better choice. BulkSearch also provides you a asynchronous processing model to perform queries in the background. 
 
